@@ -1,0 +1,36 @@
+name: Discord feeds
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # every 15 minutes (GitHub may run it a few minutes late)
+  workflow_dispatch:          # lets you run it by hand from the Actions tab
+
+permissions:
+  contents: write             # needed to save state.json back to the repo
+
+concurrency:
+  group: discord-feeds
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check YouTube and Steam Workshop
+        env:
+          DISCORD_WEBHOOK_UPLOADS: ${{ secrets.DISCORD_WEBHOOK_UPLOADS }}
+          DISCORD_WEBHOOK_CHANGELOG: ${{ secrets.DISCORD_WEBHOOK_CHANGELOG }}
+        run: python3 feeds.py
+
+      - name: Save what was posted
+        run: |
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "Update feed state [skip ci]"
+            git push
+          fi
