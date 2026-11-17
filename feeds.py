@@ -48,6 +48,8 @@ def http_get(url, timeout=30):
     req = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT,
         "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     })
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="replace")
@@ -303,8 +305,10 @@ def check_workshop(cfg, state, webhook, dry_run):
             log(f"Workshop: skipping mod with bad id: {mod!r}")
             continue
         url = f"https://steamcommunity.com/sharedfiles/filedetails/changelog/{mod_id}"
+        # Cache-buster: make Steam return the current page, not a cached copy.
+        fetch_url = f"{url}?l=english&_={int(time.time())}"
         try:
-            title, entries = parse_changelog(http_get(url))
+            title, entries = parse_changelog(http_get(fetch_url))
         except Exception as e:
             log(f"Workshop {mod_id}: could not read change notes ({e}); will try again next run")
             continue
@@ -323,7 +327,7 @@ def check_workshop(cfg, state, webhook, dry_run):
 
         new = [e for e in entries if e["ts"] > last_ts]
         if not new:
-            log(f"Workshop {name}: no new updates")
+            log(f"Workshop {name}: no new updates (newest on page: {entries[0]['ts']} {entries[0]['headline']}; last posted: {last_ts})")
             continue
 
         new = list(reversed(new[:MAX_POSTS_PER_SOURCE]))  # oldest first
