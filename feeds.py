@@ -21,6 +21,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -295,22 +296,83 @@ def parse_changelog(page_html):
     return title, entries
 
 
+STEAM_API_DETAILS = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
+CACHE_LAG_GRACE = 3 * 3600   # keep re-checking the page this long after an update shows in the API
+
+
+def get_workshop_update_times(mod_ids):
+    """Ask Steam's Web API when each item was last updated -> {id: time_updated}.
+
+    This API is a different service from the community pages and is not
+    rate-limited the same way, so it's safe to call on every run. The
+    change-notes page is only fetched when this says something changed.
+    """
+    form = {"itemcount": str(len(mod_ids))}
+    for i, mid in enumerate(mod_ids):
+        form[f"publishedfileids[{i}]"] = mid
+    data = urllib.parse.urlencode(form).encode()
+    req = urllib.request.Request(STEAM_API_DETAILS, data=data, method="POST",
+                                 headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    out = {}
+    for d in payload.get("response", {}).get("publishedfiledetails", []):
+        if d.get("result") == 1 and d.get("time_updated"):
+            out[str(d["publishedfileid"])] = int(d["time_updated"])
+    return out
+
+
+def fetch_changelog_page(url):
+    """Fetch a change-notes page, waiting and retrying if Steam says 429."""
+    delays = [20, 45]
+    for attempt in range(len(delays) + 1):
+        try:
+            return http_get(f"{url}?l=english&_={int(time.time())}")
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < len(delays):
+                wait = delays[attempt]
+                try:
+                    wait = max(wait, int(e.headers.get("Retry-After", 0)))
+                except (TypeError, ValueError):
+                    pass
+                log(f"Steam rate limit (429), waiting {wait}s and retrying")
+                time.sleep(wait)
+                continue
+            raise
+
+
 def check_workshop(cfg, state, webhook, dry_run):
-    mods = cfg.get("workshop_mods") or []
+    mods = [m for m in (cfg.get("workshop_mods") or []) if str(m.get("id", "")).strip().isdigit()]
+    for m in cfg.get("workshop_mods") or []:
+        if m not in mods:
+            log(f"Workshop: skipping mod with bad id: {m!r}")
+    if not mods:
+        return
     ws_state = state.setdefault("workshop", {})
 
+    try:
+        api_times = get_workshop_update_times([str(m["id"]).strip() for m in mods])
+    except Exception as e:
+        log(f"Workshop: Steam API unavailable ({e}); checking change-notes pages directly")
+        api_times = {}
+
+    now = int(time.time())
     for mod in mods:
-        mod_id = str(mod.get("id", "")).strip()
-        if not mod_id.isdigit():
-            log(f"Workshop: skipping mod with bad id: {mod!r}")
+        mod_id = str(mod["id"]).strip()
+        name = mod.get("name") or mod_id
+        mstate = ws_state.setdefault(mod_id, {})
+        api_updated = api_times.get(mod_id)
+
+        # Skip the page entirely if the API says nothing changed since we last looked.
+        if api_updated and mstate.get("checked_update") and api_updated <= mstate["checked_update"]:
+            log(f"Workshop {name}: no new updates")
             continue
+
         url = f"https://steamcommunity.com/sharedfiles/filedetails/changelog/{mod_id}"
-        # Cache-buster: make Steam return the current page, not a cached copy.
-        fetch_url = f"{url}?l=english&_={int(time.time())}"
         try:
-            title, entries = parse_changelog(http_get(fetch_url))
+            title, entries = parse_changelog(fetch_changelog_page(url))
         except Exception as e:
-            log(f"Workshop {mod_id}: could not read change notes ({e}); will try again next run")
+            log(f"Workshop {name}: could not read change notes ({e}); will try again next run")
             continue
 
         name = mod.get("name") or title or mod_id
@@ -318,20 +380,20 @@ def check_workshop(cfg, state, webhook, dry_run):
             log(f"Workshop {name}: no change notes found on page (is the item public?)")
             continue
 
-        mstate = ws_state.setdefault(mod_id, {})
+        newest = entries[0]["ts"]
         last_ts = mstate.get("last_ts")
         if last_ts is None:
-            mstate["last_ts"] = entries[0]["ts"]
-            log(f"Workshop {name}: first run, remembered latest update {entries[0]['ts']} (nothing posted)")
+            mstate["last_ts"] = newest
+            if api_updated:
+                mstate["checked_update"] = api_updated
+            log(f"Workshop {name}: first run, remembered latest update {newest} (nothing posted)")
             continue
 
         new = [e for e in entries if e["ts"] > last_ts]
         if not new:
-            log(f"Workshop {name}: no new updates (newest on page: {entries[0]['ts']} {entries[0]['headline']}; last posted: {last_ts})")
-            continue
-
-        new = list(reversed(new[:MAX_POSTS_PER_SOURCE]))  # oldest first
-        for e in new:
+            log(f"Workshop {name}: no new change notes on page (newest: {newest} {entries[0]['headline']}; last posted: {last_ts}; API updated: {api_updated})")
+        all_posted = True
+        for e in list(reversed(new[:MAX_POSTS_PER_SOURCE])):  # oldest first
             notes = e["notes"] or "*(No change notes were written for this update.)*"
             embed = {
                 "title": f"🛠️ {name} updated",
@@ -352,8 +414,17 @@ def check_workshop(cfg, state, webhook, dry_run):
             else:
                 ok = post_to_discord(webhook, payload)
             if not ok:
+                all_posted = False
                 break
             mstate["last_ts"] = e["ts"]
+
+        # Mark this API update as handled, unless the page looks like it's still
+        # catching up (API shows a newer update than the page) - then look again
+        # next run, for up to CACHE_LAG_GRACE.
+        if api_updated and all_posted:
+            page_behind = newest < api_updated - 60
+            if not page_behind or now - api_updated > CACHE_LAG_GRACE:
+                mstate["checked_update"] = api_updated
 
 
 # --------------------------------------------------------------------------- #
