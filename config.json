@@ -4,8 +4,7 @@
     "message": "🎥 **New video!** {title}\n{url}"
   },
   "workshop_mods": [
-    { "name": "SPLATAC",    "id": "PUT_SPLATAC_WORKSHOP_ID_HERE" },
-    { "name": "SPLATFence", "id": "PUT_SPLATFENCE_WORKSHOP_ID_HERE" }
+    { "name": "SPLATFence", "id": "3789053574" }
   ],
   "changelog_color": "E67E22"
 }
