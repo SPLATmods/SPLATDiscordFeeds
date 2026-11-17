@@ -1,11 +1,18 @@
 {
   "youtube": {
     "channel_id": "UCIDLx6mVrr-UGljMakfLzHA",
-    "message": "🎥 **New video!** {title}\n{url}"
+    "message": "🎥 **New video!** {title}\n{url}",
+    "shorts_message": "📱 **New Short!** {title}\n{url}"
   },
   "workshop_mods": [
-    { "name": "SPLATFence", "id": "3789053574" },
-    { "name": "SPLATAC", "id": "3841267285" }
+    {
+      "name": "SPLATFence",
+      "id": "3789053574"
+    },
+    {
+      "name": "SPLATAC",
+      "id": "3841267285"
+    }
   ],
   "changelog_color": "E67E22"
 }

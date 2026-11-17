@@ -132,6 +132,34 @@ def parse_youtube_feed(xml_text):
     return videos
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def is_youtube_short(video_id):
+    """True if the video is a Short.
+
+    youtube.com/shorts/<id> loads directly (200) for a Short and redirects
+    to /watch for a normal video. If the check fails for any reason the
+    video is treated as a normal one.
+    """
+    opener = urllib.request.build_opener(_NoRedirect)
+    req = urllib.request.Request(
+        f"https://www.youtube.com/shorts/{video_id}",
+        headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
+        method="HEAD",
+    )
+    try:
+        with opener.open(req, timeout=15) as resp:
+            return resp.status == 200
+    except urllib.error.HTTPError:
+        return False  # 3xx (redirect to /watch) or an error
+    except Exception as e:
+        log(f"YouTube: Shorts check failed for {video_id} ({e}); posting as a video")
+        return False
+
+
 def check_youtube(cfg, state, webhook, dry_run):
     yt = cfg.get("youtube") or {}
     channel_id = yt.get("channel_id")
@@ -159,11 +187,17 @@ def check_youtube(cfg, state, webhook, dry_run):
         log("YouTube: no new videos")
         return
 
-    template = yt.get("message", "🎥 **New video!** {title}\n{url}")
+    video_template = yt.get("message", "🎥 **New video!** {title}\n{url}")
+    short_template = yt.get("shorts_message", "📱 **New Short!** {title}\n{url}")
     posted_ids = []
     for v in reversed(new[:MAX_POSTS_PER_SOURCE]):  # oldest first
-        content = template.format(title=v["title"], url=f"https://youtu.be/{v['id']}")
-        log(f"YouTube: new video {v['id']} - {v['title']}")
+        if is_youtube_short(v["id"]):
+            kind = "Short"
+            content = short_template.format(title=v["title"], url=f"https://youtube.com/shorts/{v['id']}")
+        else:
+            kind = "video"
+            content = video_template.format(title=v["title"], url=f"https://youtu.be/{v['id']}")
+        log(f"YouTube: new {kind} {v['id']} - {v['title']}")
         if dry_run:
             print(json.dumps({"content": content}, indent=2, ensure_ascii=False))
             ok = True

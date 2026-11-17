@@ -23,6 +23,7 @@ assert [x["id"] for x in v] == ["BBB", "AAA"] and v[0]["title"] == "Newest & bes
 
 # end-to-end flow with fake network + fake discord
 posts = []
+feeds.is_youtube_short = lambda vid: vid == "CCC"
 feeds.post_to_discord = lambda url, p: posts.append((url, p)) or True
 pages = {"yt": feed, "steam": html_text}
 feeds.http_get = lambda url, timeout=30: pages["yt"] if "youtube" in url else pages["steam"]
@@ -35,7 +36,7 @@ pages["yt"] = feed.replace("<entry>", '<entry><yt:videoId>CCC</yt:videoId><title
 pages["steam"] = html_text.replace('<div class="detailBox', '<div class="changelog headline">Update: Nov 17</div><p id="1795000000">Hotfix<br></p><div class="commentsLink"></div><div class="detailBox', 1)
 feeds.check_youtube(cfg, state, "W1", False); feeds.check_workshop(cfg, state, "W2", False)
 assert len(posts) == 2, posts
-assert "youtu.be/CCC" in posts[0][1]["content"]
+assert posts[0][1]["content"].startswith("📱 **New Short!**") and "youtube.com/shorts/CCC" in posts[0][1]["content"], posts[0]
 assert posts[1][1]["embeds"][0]["description"] == "Hotfix", posts[1]
 # nothing new -> nothing posted
 feeds.check_youtube(cfg, state, "W1", False); feeds.check_workshop(cfg, state, "W2", False)
